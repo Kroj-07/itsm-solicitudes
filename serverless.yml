@@ -1,0 +1,267 @@
+org: krojas07work
+service: itsm-solicitudes
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: python3.12
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  memorySize: 256
+  timeout: 20
+  iam:
+    role: arn:aws:iam::${aws:accountId}:role/LabRole
+
+  environment:
+    # Nombres exactos del contrato: itsm-solicitudes-dev-catalogo / itsm-solicitudes-dev-solicitudes
+    TABLE_CATALOGO: ${self:service}-${self:provider.stage}-catalogo
+    TABLE_SOLICITUDES: ${self:service}-${self:provider.stage}-solicitudes
+    # SSM publicados por Integrante 1 (itsm-infra) e Integrante 5 (authorizer)
+    SNS_EVENTOS_ARN: ${ssm:/itsm/${self:provider.stage}/sns-eventos-arn}
+    STAGE: ${self:provider.stage}
+
+#Pendientes que dependen de otros (no bloquean el deploy)
+#Dato	De quién	SSM path
+#Authorizer ARN	Integrante 5	/itsm/dev/authorizer-arn
+#SNS topic ARN	Integrante 1	/itsm/dev/sns-eventos-arn
+#Cola q-solicitudes ARN	Integrante 1	/itsm/dev/q-solicitudes-arn
+#Mientras no existan esos parámetros en SSM, el serverless deploy
+#fallará en la resolución de ${ssm:...}. Para desbloquearte: crea
+#parámetros placeholder con aws ssm put-parameter --name /itsm/dev/authorizer-arn --value arn:aws:lambda:us-east-1:000000000000:function:dummy --type String
+#y luego los reemplazas cuando los reales estén listos
+#(o usas --stage dev con un provider.environment mockeado, como sugiere la sección 9).
+
+functions:
+
+  # ============================================================
+  # CATALOGO  (lectura: todos; escritura: ADMIN)
+  # ============================================================
+  listarCatalogo:
+    handler: src/handlers/catalogo.listar
+    description: GET /catalogo - Lista servicios del tenant (paginado)
+    events:
+      - http:
+          path: catalogo
+          method: get
+          cors: true
+          integration: lambda
+          authorizer:
+            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
+            resultTtlInSeconds: 300
+
+  crearServicio:
+    handler: src/handlers/catalogo.crear
+    description: POST /catalogo - Crea servicio (ADMIN)
+    events:
+      - http:
+          path: catalogo
+          method: post
+          cors: true
+          integration: lambda
+          authorizer:
+            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
+            resultTtlInSeconds: 300
+
+  editarServicio:
+    handler: src/handlers/catalogo.editar
+    description: PUT /catalogo/{id} - Edita servicio (ADMIN)
+    events:
+      - http:
+          path: catalogo/{id}
+          method: put
+          cors: true
+          integration: lambda
+          request:
+            parameters:
+              paths:
+                id: true
+          authorizer:
+            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
+            resultTtlInSeconds: 300
+
+  # ============================================================
+  # SOLICITUDES
+  # ============================================================
+  crearSolicitud:
+    handler: src/handlers/solicitudes.crear
+    description: POST /solicitudes - Crea solicitud en estado ENVIADA
+    events:
+      - http:
+          path: solicitudes
+          method: post
+          cors: true
+          integration: lambda
+          authorizer:
+            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
+            resultTtlInSeconds: 300
+
+  listarSolicitudes:
+    handler: src/handlers/solicitudes.listar
+    description: GET /solicitudes - Lista paginada (filtros estado y solicitante)
+    events:
+      - http:
+          path: solicitudes
+          method: get
+          cors: true
+          integration: lambda
+          authorizer:
+            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
+            resultTtlInSeconds: 300
+
+  obtenerSolicitud:
+    handler: src/handlers/solicitudes.obtener
+    description: GET /solicitudes/{id} - Detalle
+    events:
+      - http:
+          path: solicitudes/{id}
+          method: get
+          cors: true
+          integration: lambda
+          request:
+            parameters:
+              paths:
+                id: true
+          authorizer:
+            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
+            resultTtlInSeconds: 300
+
+  aprobarSolicitud:
+    handler: src/handlers/solicitudes.aprobar
+    description: POST /solicitudes/{id}/aprobar - Aprueba (ADMIN). Publica solicitud.cambio_estandar si aplica
+    events:
+      - http:
+          path: solicitudes/{id}/aprobar
+          method: post
+          cors: true
+          integration: lambda
+          request:
+            parameters:
+              paths:
+                id: true
+          authorizer:
+            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
+            resultTtlInSeconds: 300
+
+  rechazarSolicitud:
+    handler: src/handlers/solicitudes.rechazar
+    description: POST /solicitudes/{id}/rechazar - Rechaza con motivo (ADMIN)
+    events:
+      - http:
+          path: solicitudes/{id}/rechazar
+          method: post
+          cors: true
+          integration: lambda
+          request:
+            parameters:
+              paths:
+                id: true
+          authorizer:
+            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
+            resultTtlInSeconds: 300
+
+  completarSolicitud:
+    handler: src/handlers/solicitudes.completar
+    description: POST /solicitudes/{id}/completar - Marca COMPLETADA (ADMIN/AGENTE). Publica solicitud.completada
+    events:
+      - http:
+          path: solicitudes/{id}/completar
+          method: post
+          cors: true
+          integration: lambda
+          request:
+            parameters:
+              paths:
+                id: true
+          authorizer:
+            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
+            resultTtlInSeconds: 300
+
+  cancelarSolicitud:
+    handler: src/handlers/solicitudes.cancelar
+    description: DELETE /solicitudes/{id} - Cancela (solo ENVIADA, solicitante o ADMIN)
+    events:
+      - http:
+          path: solicitudes/{id}
+          method: delete
+          cors: true
+          integration: lambda
+          request:
+            parameters:
+              paths:
+                id: true
+          authorizer:
+            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
+            resultTtlInSeconds: 300
+
+  # ============================================================
+  # CONSUMIDOR SQS  -> q-solicitudes  (cambio.implementado)
+  # ============================================================
+  consumirCambios:
+    handler: src/consumers/cambios.handler
+    description: Consume cambio.implementado y pasa la solicitud a COMPLETADA (idempotente)
+    timeout: 60
+    events:
+      - sqs:
+          arn: ${ssm:/itsm/${self:provider.stage}/q-solicitudes-arn}
+          batchSize: 10
+          functionResponseType: ReportBatchItemFailures
+
+# ============================================================
+# RECURSOS: TABLAS DYNAMODB (PAY_PER_REQUEST)
+# ============================================================
+resources:
+  Resources:
+
+    TablaCatalogo:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.TABLE_CATALOGO}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: servicio_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: servicio_id
+            KeyType: RANGE
+
+    TablaSolicitudes:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.TABLE_SOLICITUDES}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: solicitud_id
+            AttributeType: S
+          - AttributeName: estado_creado          # GSI1: tenant_id + estado#creado_en
+            AttributeType: S
+          - AttributeName: solicitante_creado     # GSI2: tenant_id + solicitante_id#creado_en
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: solicitud_id
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: GSI1
+            KeySchema:
+              - AttributeName: tenant_id
+                KeyType: HASH
+              - AttributeName: estado_creado
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+          - IndexName: GSI2
+            KeySchema:
+              - AttributeName: tenant_id
+                KeyType: HASH
+              - AttributeName: solicitante_creado
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL

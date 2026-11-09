@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.serverless/
+node_modules/
+.env
+seed/*.log

@@ -1,0 +1,37 @@
+{
+  "tabla_catalogo": {
+    "nombre": "itsm-solicitudes-dev-catalogo",
+    "pk": "tenant_id (S)",
+    "sk": "servicio_id (S)",
+    "ejemplo_item": {
+      "tenant_id": "acme",
+      "servicio_id": "srv-acme-001",
+      "nombre": "Alta de cuenta de correo",
+      "categoria": "ACCESOS",
+      "sla_horas": 24,
+      "requiere_aprobacion": true,
+      "es_cambio_estandar": false,
+      "activo": true
+    }
+  },
+  "tabla_solicitudes": {
+    "nombre": "itsm-solicitudes-dev-solicitudes",
+    "pk": "tenant_id (S)",
+    "sk": "solicitud_id (S)",
+    "gsi1": { "nombre": "GSI1", "pk": "tenant_id", "sk": "estado_creado" },
+    "gsi2": { "nombre": "GSI2", "pk": "tenant_id", "sk": "solicitante_creado" },
+    "ejemplo_item": {
+      "tenant_id": "acme",
+      "solicitud_id": "req-acme-000001",
+      "servicio_id": "srv-acme-001",
+      "solicitante_id": "usr-acme-00042",
+      "estado": "EN_APROBACION",
+      "datos_formulario": { "justificacion": "Necesito correo corporativo" },
+      "cambio_id": null,
+      "creado_en": "2026-11-05T14:30:00Z",
+      "actualizado_en": "2026-11-05T14:30:00Z",
+      "estado_creado": "EN_APROBACION#2026-11-05T14:30:00Z",
+      "solicitante_creado": "usr-acme-00042#2026-11-05T14:30:00Z"
+    }
+  }
+}
