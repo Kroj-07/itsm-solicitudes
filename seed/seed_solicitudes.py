@@ -37,23 +37,21 @@ TENANTS = ["acme", "globex", "initech"]
 SOLICITUDES_POR_TENANT = 10_000
 SEED = 2026
 
-# Distribución realista (60% cerradas, 25% en progreso, 15% nuevas)
+# Flujo unificado (contrato v1.1): EN_APROBACION -> APROBADA -> COMPLETADA
+#                                  EN_APROBACION -> RECHAZADA | CANCELADA
+# Distribución realista (65% cerradas, 35% en progreso)
 DIST_ESTADOS = [
-    ("COMPLETADA",    0.50),  # cerrada
+    ("COMPLETADA",    0.55),  # cerrada
     ("CANCELADA",     0.05),  # cerrada
     ("RECHAZADA",     0.05),  # cerrada
-    ("EN_EJECUCION",  0.15),  # en progreso
-    ("APROBADA",      0.05),  # en progreso
-    ("EN_APROBACION", 0.05),  # en progreso
-    ("ENVIADA",       0.15),  # nueva
+    ("APROBADA",      0.15),  # en progreso
+    ("EN_APROBACION", 0.20),  # en progreso
 ]
 
 # Ventana temporal máxima de creación según el estado
 ANTIGUEDAD_MAX_DIAS = {
-    "ENVIADA":        30,
     "EN_APROBACION":  45,
     "APROBADA":       90,
-    "EN_EJECUCION":  180,
     "COMPLETADA":    365,
     "CANCELADA":     365,
     "RECHAZADA":     365,
@@ -169,7 +167,7 @@ def _construir_solicitud(tenant: str, n: int, servicios: list[dict]) -> dict:
     }
 
     # Campos adicionales según el estado
-    if estado in ("APROBADA", "EN_EJECUCION", "COMPLETADA"):
+    if estado in ("APROBADA", "COMPLETADA"):
         item["aprobador_id"] = f"usr-{tenant}-{random.randint(1, 100):05d}"
 
     if estado == "RECHAZADA":

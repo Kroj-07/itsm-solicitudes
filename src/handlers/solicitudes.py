@@ -26,11 +26,14 @@ from ..common.validacion import (
 )
 
 
+# Flujo unificado (contrato v1.1):
+#   EN_APROBACION -> APROBADA -> COMPLETADA
+#   EN_APROBACION -> RECHAZADA | CANCELADA
 # Estados que permiten cada acción
-_ESTADOS_APROBAR = ("ENVIADA", "EN_APROBACION")
-_ESTADOS_RECHAZAR = ("ENVIADA", "EN_APROBACION")
-_ESTADOS_COMPLETAR = ("APROBADA", "EN_EJECUCION")
-_ESTADOS_CANCELAR = ("ENVIADA", "EN_APROBACION")
+_ESTADOS_APROBAR = ("EN_APROBACION",)
+_ESTADOS_RECHAZAR = ("EN_APROBACION",)
+_ESTADOS_COMPLETAR = ("APROBADA",)
+_ESTADOS_CANCELAR = ("EN_APROBACION",)
 
 
 def _generar_solicitud_id(tenant_id: str) -> str:

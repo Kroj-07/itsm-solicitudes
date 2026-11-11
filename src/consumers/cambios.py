@@ -1,3 +1,7 @@
+"""
+CODIGO FUTURO (fase EDA): fuera del despliegue actual (ver serverless.yml).
+Se habilitara cuando el profesor autorice los eventos y Infra publique los ARN reales.
+"""
 import json
 
 from botocore.exceptions import ClientError
@@ -42,7 +46,7 @@ def _procesar(record) -> None:
         update_solicitud_estado(
             tenant_id, solicitud_id, "COMPLETADA", ahora,
             extra=extra,
-            estados_validos=["APROBADA", "EN_EJECUCION"],
+            estados_validos=["APROBADA"],
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":

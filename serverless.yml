@@ -3,6 +3,14 @@ service: itsm-solicitudes
 
 frameworkVersion: '3'
 
+custom:
+  # Authorizer compartido (contrato v1.1, seccion 3). Lo publica itsm-auth en SSM.
+  authorizer:
+    arn: ${ssm:/itsm/${sls:stage}/authorizer-arn}
+    type: token
+    identitySource: method.request.header.Authorization
+    resultTtlInSeconds: 0   # sin cache durante la integracion inicial
+
 provider:
   name: aws
   runtime: python3.12
@@ -17,21 +25,29 @@ provider:
     # Nombres exactos del contrato: itsm-solicitudes-dev-catalogo / itsm-solicitudes-dev-solicitudes
     TABLE_CATALOGO: ${self:service}-${self:provider.stage}-catalogo
     TABLE_SOLICITUDES: ${self:service}-${self:provider.stage}-solicitudes
-    # SSM publicados por Integrante 1 (itsm-infra) e Integrante 5 (authorizer)
-    SNS_EVENTOS_ARN: ${ssm:/itsm/${self:provider.stage}/sns-eventos-arn}
     STAGE: ${self:provider.stage}
+    # Fase actual (avance 30%): eventos SNS/SQS POSPUESTOS por revision del profesor.
+    # publicar_evento() es no-op mientras sea 'false'. NO se resuelve ningun ARN de SNS/SQS
+    # desde SSM y NO se crean ARNs placeholder. Se activara en la fase EDA.
+    EVENTS_ENABLED: 'false'
 
-#Pendientes que dependen de otros (no bloquean el deploy)
-#Dato	De quién	SSM path
-#Authorizer ARN	Integrante 5	/itsm/dev/authorizer-arn
-#SNS topic ARN	Integrante 1	/itsm/dev/sns-eventos-arn
-#Cola q-solicitudes ARN	Integrante 1	/itsm/dev/q-solicitudes-arn
-#Mientras no existan esos parámetros en SSM, el serverless deploy
-#fallará en la resolución de ${ssm:...}. Para desbloquearte: crea
-#parámetros placeholder con aws ssm put-parameter --name /itsm/dev/authorizer-arn --value arn:aws:lambda:us-east-1:000000000000:function:dummy --type String
-#y luego los reemplazas cuando los reales estén listos
-#(o usas --stage dev con un provider.environment mockeado, como sugiere la sección 9).
+package:
+  patterns:
+    - '!seed/**'
+    - '!docs/**'
+    - '!tests/**'
+    - '!README.md'
+    - '!.venv/**'
+    - '!venv/**'
+    - '!node_modules/**'
+    - '!.git/**'
+    - '!.serverless/**'
+    - '!.env*'
+    - '!**/__pycache__/**'
+    # Consumidores SQS: codigo futuro, versionado pero fuera del despliegue actual
+    - '!src/consumers/**'
 
+# Todas las rutas usan lambda-proxy (default de Serverless v3) + Lambda Authorizer de itsm-auth.
 functions:
 
   # ============================================================
@@ -45,10 +61,7 @@ functions:
           path: catalogo
           method: get
           cors: true
-          integration: lambda
-          authorizer:
-            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
-            resultTtlInSeconds: 300
+          authorizer: ${self:custom.authorizer}
 
   crearServicio:
     handler: src/handlers/catalogo.crear
@@ -58,10 +71,7 @@ functions:
           path: catalogo
           method: post
           cors: true
-          integration: lambda
-          authorizer:
-            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
-            resultTtlInSeconds: 300
+          authorizer: ${self:custom.authorizer}
 
   editarServicio:
     handler: src/handlers/catalogo.editar
@@ -71,30 +81,22 @@ functions:
           path: catalogo/{id}
           method: put
           cors: true
-          integration: lambda
-          request:
-            parameters:
-              paths:
-                id: true
-          authorizer:
-            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
-            resultTtlInSeconds: 300
+          authorizer: ${self:custom.authorizer}
 
   # ============================================================
   # SOLICITUDES
+  # Flujo: EN_APROBACION -> APROBADA -> COMPLETADA
+  #        EN_APROBACION -> RECHAZADA | CANCELADA
   # ============================================================
   crearSolicitud:
     handler: src/handlers/solicitudes.crear
-    description: POST /solicitudes - Crea solicitud en estado ENVIADA
+    description: POST /solicitudes - Crea solicitud (EN_APROBACION o APROBADA segun el servicio)
     events:
       - http:
           path: solicitudes
           method: post
           cors: true
-          integration: lambda
-          authorizer:
-            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
-            resultTtlInSeconds: 300
+          authorizer: ${self:custom.authorizer}
 
   listarSolicitudes:
     handler: src/handlers/solicitudes.listar
@@ -104,10 +106,7 @@ functions:
           path: solicitudes
           method: get
           cors: true
-          integration: lambda
-          authorizer:
-            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
-            resultTtlInSeconds: 300
+          authorizer: ${self:custom.authorizer}
 
   obtenerSolicitud:
     handler: src/handlers/solicitudes.obtener
@@ -117,95 +116,50 @@ functions:
           path: solicitudes/{id}
           method: get
           cors: true
-          integration: lambda
-          request:
-            parameters:
-              paths:
-                id: true
-          authorizer:
-            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
-            resultTtlInSeconds: 300
+          authorizer: ${self:custom.authorizer}
 
   aprobarSolicitud:
     handler: src/handlers/solicitudes.aprobar
-    description: POST /solicitudes/{id}/aprobar - Aprueba (ADMIN). Publica solicitud.cambio_estandar si aplica
+    description: POST /solicitudes/{id}/aprobar - EN_APROBACION -> APROBADA (ADMIN)
     events:
       - http:
           path: solicitudes/{id}/aprobar
           method: post
           cors: true
-          integration: lambda
-          request:
-            parameters:
-              paths:
-                id: true
-          authorizer:
-            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
-            resultTtlInSeconds: 300
+          authorizer: ${self:custom.authorizer}
 
   rechazarSolicitud:
     handler: src/handlers/solicitudes.rechazar
-    description: POST /solicitudes/{id}/rechazar - Rechaza con motivo (ADMIN)
+    description: POST /solicitudes/{id}/rechazar - EN_APROBACION -> RECHAZADA con motivo (ADMIN)
     events:
       - http:
           path: solicitudes/{id}/rechazar
           method: post
           cors: true
-          integration: lambda
-          request:
-            parameters:
-              paths:
-                id: true
-          authorizer:
-            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
-            resultTtlInSeconds: 300
+          authorizer: ${self:custom.authorizer}
 
   completarSolicitud:
     handler: src/handlers/solicitudes.completar
-    description: POST /solicitudes/{id}/completar - Marca COMPLETADA (ADMIN/AGENTE). Publica solicitud.completada
+    description: POST /solicitudes/{id}/completar - APROBADA -> COMPLETADA (ADMIN/AGENTE)
     events:
       - http:
           path: solicitudes/{id}/completar
           method: post
           cors: true
-          integration: lambda
-          request:
-            parameters:
-              paths:
-                id: true
-          authorizer:
-            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
-            resultTtlInSeconds: 300
+          authorizer: ${self:custom.authorizer}
 
   cancelarSolicitud:
     handler: src/handlers/solicitudes.cancelar
-    description: DELETE /solicitudes/{id} - Cancela (solo ENVIADA, solicitante o ADMIN)
+    description: DELETE /solicitudes/{id} - EN_APROBACION -> CANCELADA (solicitante dueno o ADMIN)
     events:
       - http:
           path: solicitudes/{id}
           method: delete
           cors: true
-          integration: lambda
-          request:
-            parameters:
-              paths:
-                id: true
-          authorizer:
-            arn: ${ssm:/itsm/${self:provider.stage}/authorizer-arn}
-            resultTtlInSeconds: 300
+          authorizer: ${self:custom.authorizer}
 
-  # ============================================================
-  # CONSUMIDOR SQS  -> q-solicitudes  (cambio.implementado)
-  # ============================================================
-  consumirCambios:
-    handler: src/consumers/cambios.handler
-    description: Consume cambio.implementado y pasa la solicitud a COMPLETADA (idempotente)
-    timeout: 60
-    events:
-      - sqs:
-          arn: ${ssm:/itsm/${self:provider.stage}/q-solicitudes-arn}
-          batchSize: 10
-          functionResponseType: ReportBatchItemFailures
+  # NOTA: el consumidor SQS `consumirCambios` (q-solicitudes / cambio.implementado) se retiro
+  # del despliegue en esta fase. El codigo sigue en src/consumers/cambios.py para la fase EDA.
 
 # ============================================================
 # RECURSOS: TABLAS DYNAMODB (PAY_PER_REQUEST)
