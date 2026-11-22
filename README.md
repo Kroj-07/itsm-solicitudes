@@ -4,9 +4,9 @@ Microservicio **Solicitudes de Servicio + Catálogo** del proyecto final CS2032 
 
 - **Dueño**: Integrante 4
 - **Runtime**: Python 3.12 · **Región**: `us-east-1` · **Stage**: `dev`
-- **Stack (fase actual, avance 30%)**: API Gateway REST (**lambda-proxy**) + Lambda + DynamoDB (2 tablas) + Lambda Authorizer de `itsm-auth`
-- **Eventos SNS/SQS**: **pospuestos por revisión del profesor** (no eliminados). Ver sección 3.
-- **Repos relacionados**: `itsm-auth` (authorizer), `itsm-infra` (SNS/SQS, **no desplegar** en esta fase), `itsm-cambios`, `itsm-frontend`
+- **Stack desplegado**: API Gateway REST + Lambda + DynamoDB (2 tablas) + Lambda Authorizer + SNS/SQS.
+- **Eventos SNS/SQS**: habilitados y probados con el microservicio de Cambios.
+- **Repos relacionados**: `itsm-auth`, `itsm-infra`, `itsm-cambios`, `itsm-frontend`.
 
 ---
 
@@ -63,7 +63,7 @@ Dos tablas DynamoDB `PAY_PER_REQUEST`, con `tenant_id` siempre como PK.
 | `nombre`, `categoria` | S | |
 | `sla_horas` | N | |
 | `requiere_aprobacion` | BOOL | |
-| `es_cambio_estandar` | BOOL | si es `true`, aprobar publicará `solicitud.cambio_estandar` (cuando los eventos estén activos) |
+| `es_cambio_estandar` | BOOL | si es `true`, aprobar publica `solicitud.cambio_estandar` |
 | `activo` | BOOL | |
 
 ### `itsm-solicitudes-dev-solicitudes`
@@ -75,7 +75,7 @@ Dos tablas DynamoDB `PAY_PER_REQUEST`, con `tenant_id` siempre como PK.
 | `servicio_id`, `solicitante_id` | S | |
 | `estado` | S | ver flujo abajo |
 | `datos_formulario` | M | `{ "justificacion": "..." }` |
-| `cambio_id` | S \| null | se llenará al completar vía cambio estándar (fase de eventos) |
+| `cambio_id` | S \| null | se registra al completar automáticamente mediante `cambio.implementado` |
 | `creado_en`, `actualizado_en` | S | ISO 8601 UTC |
 | **`estado_creado`** | S | GSI1: `"{estado}#{creado_en}"` |
 | **`solicitante_creado`** | S | GSI2: `"{solicitante_id}#{creado_en}"` |
@@ -98,39 +98,50 @@ EN_APROBACION ──► APROBADA ──► COMPLETADA
 - Estados válidos: `EN_APROBACION`, `APROBADA`, `COMPLETADA`, `RECHAZADA`, `CANCELADA`.
 - Si el servicio tiene `requiere_aprobacion: false`, la solicitud nace en `APROBADA`.
 - `aprobar` y `rechazar` (ADMIN) y `cancelar` (dueño o ADMIN) sólo desde `EN_APROBACION`.
-- `completar` (ADMIN/AGENTE) sólo desde `APROBADA`. La completación automática por `cambio.implementado` queda para la fase de eventos.
+- `completar` (ADMIN/AGENTE) solo desde `APROBADA`. El consumidor de `cambio.implementado` tambien puede completar automaticamente la solicitud.
 - `ENVIADA` y `EN_EJECUCION` **ya no existen** en esta versión (no hay endpoints que los gestionen).
 
 ---
 
-## 3. Eventos (APLAZADOS, no eliminados)
+## 3. Integracion por eventos desplegada
 
-> **Estado**: SNS/SQS están pospuestos en esta fase por revisión del profesor. El plan original sigue contemplando la arquitectura basada en eventos para la entrega completa.
+El microservicio publica eventos en SNS y consume mensajes desde SQS en AWS, region `us-east-1`, stage `dev`.
 
-Qué significa en este repo:
+**Configuracion activa:**
 
-- `serverless.yml` **no** resuelve `/itsm/dev/sns-eventos-arn` ni `/itsm/dev/q-solicitudes-arn` y **no** declara triggers SQS (`consumirCambios` fuera de `functions`).
-- `provider.environment.EVENTS_ENABLED: 'false'`. `publicar_evento()` (`src/common/eventos.py`) retorna sin hacer nada; ninguna operación CRUD falla por eventos.
-- `src/consumers/cambios.py` se conserva como código futuro y está excluido del paquete (`package.patterns`).
-- No se crean placeholders de ARN falsos.
+- `EVENTS_ENABLED=true`.
+- `SNS_EVENTOS_ARN` obtenido desde SSM Parameter Store.
+- Consumidor Lambda `itsm-solicitudes-dev-consumirCambios`.
+- Cola `itsm-q-solicitudes-dev`, con DLQ y politica de reintentos administradas por `itsm-infra`.
+- Procesamiento SQS con `ReportBatchItemFailures`.
 
-Diseño previsto para la fase EDA (sin cambios):
+### Eventos publicados
 
-| Publica (topic `itsm-eventos-dev`) | Cuándo | `data` |
-|---|---|---|
-| `solicitud.creada` | `POST /solicitudes` | `{ solicitud_id, servicio_id }` |
-| `solicitud.cambio_estandar` | `POST .../aprobar` sobre servicio con `es_cambio_estandar: true` | `{ solicitud_id, servicio_id }` |
-| `solicitud.completada` | `POST .../completar` o al consumir `cambio.implementado` | `{ solicitud_id }` |
-
-| Consume (`q-solicitudes`) | Acción |
+| Evento | Origen |
 |---|---|
-| `cambio.implementado` | `APROBADA` → `COMPLETADA`, guarda `cambio_id`, publica `solicitud.completada`. Idempotente. |
+| `solicitud.creada` | Creacion de solicitud |
+| `solicitud.cambio_estandar` | Aprobacion de una solicitud cuyo servicio es un cambio estandar |
+| `solicitud.completada` | Completacion manual o automatica |
 
-Sobre del mensaje y `MessageAttributes` (`evento`, `tenant_id`) sin cambios respecto al plan original.
+### Evento consumido
 
-**Para activar la fase EDA** (cuando el profesor lo autorice): desplegar `itsm-infra` primero, publicar los ARN reales en SSM, volver a declarar `SNS_EVENTOS_ARN` (SSM) y el trigger `consumirCambios` en `serverless.yml`, quitar la exclusión de `src/consumers/**` y poner `EVENTS_ENABLED: 'true'`.
+`cambio.implementado`: si incluye un `solicitud_id` vinculado, el consumidor actualiza la solicitud de `APROBADA` a `COMPLETADA`, guarda `cambio_id` y publica `solicitud.completada`.
 
----
+El procesamiento contempla entregas repetidas de mensajes.
+
+### Prueba de integracion verificada
+
+Tenant: `acme`.
+
+1. Se creo la solicitud `req-acme-1795327666595-ppso` para el servicio `srv-acme-004`.
+2. La solicitud entro en estado `EN_APROBACION`.
+3. Al aprobarla, se publico `solicitud.cambio_estandar`.
+4. Cambios genero automaticamente el RFC `chg-acme-e1c48fc7f10a`.
+5. El RFC se creo como `ESTANDAR`, `APROBADO` y con riesgo `BAJO`.
+6. Se programo e implemento el RFC mediante la API de Cambios.
+7. El consumidor SQS de Solicitudes actualizo automaticamente el registro a `COMPLETADA` y guardo su `cambio_id`.
+
+La integracion se verifico mediante respuestas de API y consultas a DynamoDB. La cola de Solicitudes y su DLQ quedaron sin mensajes pendientes.
 
 ## 4. Requisitos previos
 
@@ -150,13 +161,15 @@ Sobre del mensaje y `MessageAttributes` (`evento`, `tenant_id`) sin cambios resp
 | Parámetro | Dueño |
 |---|---|
 | `/itsm/dev/authorizer-arn` | Integrante 5 (`itsm-auth`) |
+| `/itsm/dev/sns-eventos-arn` | `itsm-infra` |
+| `/itsm/dev/q-solicitudes-arn` | `itsm-infra` |
 
 Verificar:
 ```bash
 aws ssm get-parameter --name /itsm/dev/authorizer-arn
 ```
 
-En esta fase **no** se necesitan `/itsm/dev/sns-eventos-arn` ni `/itsm/dev/q-solicitudes-arn`.
+Para desplegar la integracion por eventos se requieren `/itsm/dev/sns-eventos-arn` y `/itsm/dev/q-solicitudes-arn`.
 
 ---
 
@@ -172,7 +185,7 @@ cd itsm-solicitudes
 # 2. Verificar credenciales (Learner Lab rota cada sesión)
 aws sts get-caller-identity
 
-# 3. Desplegar (crea API Gateway lambda-proxy + Lambdas + DynamoDB; sin SNS/SQS)
+# 3. Desplegar API Gateway, Lambdas, DynamoDB y consumidor SQS
 npm install -g serverless@3
 serverless deploy --stage dev
 
@@ -268,9 +281,9 @@ curl -X POST "$API_URL/solicitudes/req-acme-XXXXXX/completar" \
   -H "Authorization: Bearer $JWT_AGENTE"
 ```
 
-### 7.3 Simular `cambio.implementado` (POSPUESTO)
+### 7.3 Integracion real con Cambios
 
-Requiere SNS/SQS desplegados (fase EDA). En esta fase la completación se prueba con `POST /solicitudes/{id}/completar`.
+La integracion real se verifico mediante una solicitud de cambio estandar aprobada, el RFC generado automaticamente y la completacion al recibir `cambio.implementado`. Ver seccion 3.
 
 ### 7.4 Aislamiento multi-tenant (evidencia del informe)
 
@@ -289,12 +302,12 @@ itsm-solicitudes/
 ├── serverless.yml
 ├── requirements.txt              (vacío: boto3 ya viene en el runtime)
 ├── src/
-│   ├── common/                   respuestas, auth, dynamo, eventos (no-op si EVENTS_ENABLED=false), validación
+│   ├── common/                   respuestas, auth, dynamo, eventos SNS y validacion
 │   ├── handlers/
 │   │   ├── catalogo.py           GET/POST/PUT catálogo
 │   │   └── solicitudes.py        CRUD + aprobar/rechazar/completar/cancelar
 │   └── consumers/
-│       └── cambios.py            FUTURO (fase EDA): consumidor de q-solicitudes, fuera del despliegue
+│       └── cambios.py            consumidor SQS desplegado de q-solicitudes
 ├── seed/
 │   ├── seed_solicitudes.py       seed de 30,000 solicitudes + catálogo
 │   └── requirements-seed.txt
@@ -309,8 +322,8 @@ itsm-solicitudes/
 ## 9. Notas para el grupo
 
 - **Front**: la URL base del API va en `VITE_API_SOLICITUDES` (variables de entorno del repo `itsm-frontend`, Amplify).
-- **Cambios** (fase EDA): el evento `solicitud.cambio_estandar` trae `solicitud_id`; al implementar ese cambio, Cambios debe devolver `solicitud_id` en `cambio.implementado` para que el consumidor sepa qué completar. Verificar el contrato antes de habilitar consumidores.
-- **Notificaciones** (fase EDA): `solicitud.creada` y `solicitud.completada` irán a `q-notificaciones`.
+- **Cambios**: la integracion `solicitud.cambio_estandar` y `cambio.implementado` fue verificada de extremo a extremo.
+- **Notificaciones**: el bus SNS distribuye los eventos a `q-notificaciones`, consumida por el microservicio de Incidentes.
 - **Cambios al contrato** (nombres de tabla, estados, sobre del evento): avisar al grupo antes de aplicarlos.
 
 ---
