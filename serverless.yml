@@ -29,7 +29,8 @@ provider:
     # Fase actual (avance 30%): eventos SNS/SQS POSPUESTOS por revision del profesor.
     # publicar_evento() es no-op mientras sea 'false'. NO se resuelve ningun ARN de SNS/SQS
     # desde SSM y NO se crean ARNs placeholder. Se activara en la fase EDA.
-    EVENTS_ENABLED: 'false'
+    EVENTS_ENABLED: 'true'
+    SNS_EVENTOS_ARN: ${ssm:/itsm/${sls:stage}/sns-eventos-arn}
 
 package:
   patterns:
@@ -45,7 +46,6 @@ package:
     - '!.env*'
     - '!**/__pycache__/**'
     # Consumidores SQS: codigo futuro, versionado pero fuera del despliegue actual
-    - '!src/consumers/**'
 
 # Todas las rutas usan lambda-proxy (default de Serverless v3) + Lambda Authorizer de itsm-auth.
 functions:
@@ -158,12 +158,19 @@ functions:
           cors: true
           authorizer: ${self:custom.authorizer}
 
-  # NOTA: el consumidor SQS `consumirCambios` (q-solicitudes / cambio.implementado) se retiro
-  # del despliegue en esta fase. El codigo sigue en src/consumers/cambios.py para la fase EDA.
 
 # ============================================================
 # RECURSOS: TABLAS DYNAMODB (PAY_PER_REQUEST)
 # ============================================================
+  consumirCambios:
+    handler: src/consumers/cambios.handler
+    events:
+      - sqs:
+          arn: ${ssm:/itsm/${sls:stage}/q-solicitudes-arn}
+          batchSize: 10
+          functionResponseType: ReportBatchItemFailures
+          enabled: true
+
 resources:
   Resources:
 
